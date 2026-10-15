@@ -1775,7 +1775,8 @@ class Builder:
         cols0 = sd.get("cols") or (n if n <= 4 else 3)
 
         def need(c, fs, cw, avail):
-            h = 0.25 + (min(1.6, avail * 0.42) + 0.15 if c.get("image") else (0.7 if c.get("icon") else 0))
+            h = 0.25 + (min(1.6, avail * 0.42) + 0.15 if c.get("image")
+                        else (0.7 if c.get("icon") and not compact[0] else 0))
             h += 0.25 + wrap_lines(c["title"], 14, cw - 0.5, True) * 0.25
             if c.get("text"):
                 body = c["text"] if isinstance(c["text"], list) else [c["text"]]
@@ -1783,16 +1784,18 @@ class Builder:
             return h + 0.15
 
         best = None
+        compact = [False]  # picto en ligne avec le titre quand la place manque
         for cols in range(cols0, max(cols0, min(n, 4)) + 1):  # plus de colonnes si le texte ne tient pas
             rows = (n + cols - 1) // cols
             cw = (SW - 2 * MX - gap * (cols - 1)) / cols
             avail = (bottom - top - gap * (rows - 1)) / rows
-            over = max(need(c, 8, cw, avail) / avail for c in cards)
+            over = max(need(c, 9, cw, avail) / (avail * 0.9) for c in cards)
             if best is None or over < best[0] - 0.05:
                 best = (over, cols)
             if over <= 1:
                 break
         cols = best[1]
+        compact[0] = best[0] > 1
         rows = (n + cols - 1) // cols
         cw = (SW - 2 * MX - gap * (cols - 1)) / cols
         avail = (bottom - top - gap * (rows - 1)) / rows
@@ -1821,10 +1824,14 @@ class Builder:
                 if c.get("image_mode") != "contain":
                     self.round_pic(pic, 0.06)
                 yy += min(1.6, ch * 0.42) + 0.15
-            elif c.get("icon"):
+            elif c.get("icon") and not compact[0]:
                 self.token(s, x + 0.25, yy, 0.55, c["icon"], size=9 if len(c["icon"]) > 3 else 11, filled=True)
                 yy += 0.7
-            self.text(s, x + 0.25, yy, cw - 0.5, 0.6, c["title"], size=14, bold=True,
+            tx_ = x + 0.25
+            if c.get("icon") and compact[0] and not c.get("image"):
+                self.token(s, x + 0.2, yy - 0.04, 0.38, c["icon"], size=7, filled=True)
+                tx_ = x + 0.68
+            self.text(s, tx_, yy, x + cw - 0.25 - tx_, 0.6, c["title"], size=14, bold=True,
                       color="accent3" if dark else "accent1")
             yy += 0.25 + wrap_lines(c["title"], 14, cw - 0.5, True) * 0.25
             if c.get("text"):
