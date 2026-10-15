@@ -3,3 +3,8 @@ sources/
 analyse/
 *.pptx
 *.pdf
+livrables/
+plan.md
+content.yaml
+CHANGELOG.md
+A_COMPLETER.md
