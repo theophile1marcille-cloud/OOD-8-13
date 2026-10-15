@@ -125,6 +125,7 @@ class Builder:
 
     def rect(self, s, x, y, w, h, fill=None, line=None, shape=MSO_SHAPE.RECTANGLE, radius=None,
              dash=False, line_w=1.0, name=None):
+        w, h = max(w, 0.01), max(h, 0.01)  # PowerPoint refuse les dimensions négatives
         sh = s.shapes.add_shape(shape, Inches(x), Inches(y), Inches(w), Inches(h))
         if name:
             sh.name = name
@@ -170,6 +171,7 @@ class Builder:
     def text(self, s, x, y, w, h, runs, size=16, color="lt1", bold=False, align="l", anchor="t",
              italic=False, spacing=None, line=1.0, name=None, check=True, para_space=0):
         """runs : str, ou liste de paragraphes ; un paragraphe = str ou liste de (texte, {opts})."""
+        w, h = max(w, 0.05), max(h, 0.05)  # PowerPoint refuse les dimensions négatives
         tb = s.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
         if name:
             tb.name = name
@@ -1867,12 +1869,24 @@ class Builder:
             shape.click_action.target_slide = self.ids[target]
         self.write_theme()
         self.prs.core_properties.title = self.meta["title"]
+        self.fix_presentation_order()
         self.prs.save(self.out_path)
         self.write_todo()
         print(f"{len(self.prs.slides)} slides → {self.out_path}")
         for w in self.warnings:
             print("ATTENTION", w)
         return not self.warnings
+
+    def fix_presentation_order(self):
+        """Remet les enfants de presentation.xml dans l'ordre du schéma (sinon PowerPoint propose une réparation)."""
+        order = ["sldMasterIdLst", "notesMasterIdLst", "handoutMasterIdLst", "sldIdLst", "sldSz", "notesSz",
+                 "smartTags", "embeddedFontLst", "custShowLst", "photoAlbum", "custDataLst", "kinsoku",
+                 "defaultTextStyle", "modifyVerifier", "extLst"]
+        pres = self.prs.part._element
+        kids = list(pres)
+        kids.sort(key=lambda e: order.index(e.tag.split("}")[1]) if e.tag.split("}")[1] in order else len(order))
+        for e in kids:
+            pres.append(e)
 
     def write_theme(self):
         """Écrit les couleurs remplacées (meta.theme_overrides) dans le thème du fichier livré."""
