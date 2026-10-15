@@ -1,0 +1,5 @@
+# Fichiers Philips internes (Philips internal use only) : ne jamais publier dans ce dépôt public
+sources/
+analyse/
+*.pptx
+*.pdf
