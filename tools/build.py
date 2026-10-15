@@ -94,6 +94,12 @@ class Builder:
     def __init__(self, content_path, out_path):
         self.content_path = Path(content_path)
         self.content = yaml.safe_load(self.content_path.read_text())
+        for i, sec in enumerate(self.content["sections"]):  # sections dans des fichiers séparés
+            if "include" in sec:
+                files = sec["include"] if isinstance(sec["include"], list) else [sec["include"]]
+                parts = [yaml.safe_load((self.content_path.parent / f).read_text()) for f in files]
+                merged = {**parts[0], "slides": [sl for part in parts for sl in part.get("slides", [])]}
+                self.content["sections"][i] = {**merged, **{k: v for k, v in sec.items() if k != "include"}}
         meta = self.content["meta"]
         self.out_path = Path(out_path)
         self.img_root = ROOT / meta["images_root"]
@@ -260,6 +266,11 @@ class Builder:
     def resolve_image(self, ref):
         """« J-47 » = plus grande image de la page 47 du JFR ; « J-47#2 » = 2e plus grande ;
         sinon chemin relatif à analyse/."""
+        m = re.fullmatch(r"([GJ])-(\d+)@(\d+)", str(ref))
+        if m:  # n-ième image de la page en ordre de lecture (rangées de haut en bas, puis gauche à droite)
+            imgs = self.page_images(m.group(1), int(m.group(2)))
+            k = int(m.group(3)) - 1
+            return imgs[k] if k < len(imgs) else None
         m = re.fullmatch(r"([GJ])-(\d+)(?:#(\d+))?", str(ref))
         if not m:
             return self.img_root / ref
@@ -270,6 +281,15 @@ class Builder:
         page, rank = int(m.group(2)), int(m.group(3) or 1)
         cands = sorted((i for i in self._img_index[doc] if page in i["pages"]), key=lambda i: -i["w"] * i["h"])
         return self.img_root / cands[rank - 1]["file"] if len(cands) >= rank else None
+
+    def page_images(self, kind, page, min_side=110):
+        doc = {"G": "guide_2025", "J": "jfr_2026"}[kind]
+        if doc not in self._img_index:
+            import json
+            self._img_index[doc] = json.loads((self.img_root / f"{doc}_images.json").read_text())
+        c = [i for i in self._img_index[doc] if page in i["pages"] and min(i["w"], i["h"]) >= min_side]
+        c.sort(key=lambda i: (round(i["bbox_pt"][1] / 90), i["bbox_pt"][0]))
+        return [self.img_root / i["file"] for i in c]
 
     @staticmethod
     def round_pic(pic, radius):
@@ -389,7 +409,7 @@ class Builder:
             if self.dark:
                 veil = self.rect(s, x, y, w, h, fill="dk1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=radius,
                                  name="Verre – voile")
-                self.alpha_fill(veil, 0.55)
+                self.alpha_fill(veil, getattr(self, "_veil", None) or 0.55)
         sh = self.rect(s, x, y, w, h, fill="lt1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=radius, name=name)
         top, bottom = ((0.24, 0.07) if self.dark else (0.88, 0.62))
         top, bottom = top * strength, bottom * strength
@@ -647,6 +667,7 @@ class Builder:
         ov = self.rect(s, px, 0, 1.4, SH, fill="dk1")
         self.gradient(ov, [(0, "dk1", 1), (1, "dk1", 0)])
         self.halo(s, 2.6, 3.6, 3.6, alpha=0.55)
+        self.deco_arcs(s, px, SH / 2, [3.2, 3.6, 4.1], start=95, end=265, alpha=0.5)
         num = sd.get("number")
         if num:
             self.text(s, MX - 0.15, 0.2, 7, 3.9, f"{num:02d}", size=260, bold=True, color="dk2", check=False)
@@ -664,18 +685,25 @@ class Builder:
             self.text(s, MX, ty, 5.9, 0.9, sd["subtitle"], size=16, color="lt2")
         chips = sd.get("chapters", [])
         if chips:
-            gx, gy, gh = MX, 5.55, 0.95
             gw = px - MX - 0.35
-            self.glass(s, gx, gy, gw, gh, radius=0.25, name="Chapitres")
+            rows, cx_ = 1, 0.3
+            for ch in chips:
+                w_ = text_width(ch["label"], 12, True) + 0.5
+                if cx_ + w_ > gw - 0.2:
+                    rows, cx_ = rows + 1, 0.3
+                cx_ += w_ + 0.14
+            gh = 0.55 + 0.46 * rows
+            gx, gy = MX, 6.55 - gh
+            self.glass(s, gx, gy, gw, gh, radius=0.25 if rows == 1 else 0.15, name="Chapitres")
             self.text(s, gx + 0.3, gy + 0.12, 2, 0.25, "CHAPITRES", size=8, bold=True, color="lt2", spacing=250,
                       check=False)
-            cx = gx + 0.3
+            cx, cy = gx + 0.3, gy + 0.42
             for ch in chips:
                 w = text_width(ch["label"], 12, True) + 0.5
-                c = self.rect(s, cx, gy + 0.42, w, 0.36, fill="accent1", shape=MSO_SHAPE.ROUNDED_RECTANGLE,
-                              radius=0.5)
-                self.text(s, cx, gy + 0.42, w, 0.36, ch["label"], size=12, bold=True, align="c", anchor="m",
-                          check=False)
+                if cx + w > gx + gw - 0.2:
+                    cx, cy = gx + 0.3, cy + 0.46
+                c = self.rect(s, cx, cy, w, 0.36, fill="accent1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.5)
+                self.text(s, cx, cy, w, 0.36, ch["label"], size=12, bold=True, align="c", anchor="m", check=False)
                 self.link(c, ch["link"])
                 cx += w + 0.14
         self.chrome(s, sd, show_section=False)
@@ -759,7 +787,8 @@ class Builder:
         self.frame(s, dark=False)
         if sd.get("eyebrow"):
             self.eyebrow(s, MX, 0.62, sd["eyebrow"])
-        self.set_title(s, sd["title"], y=0.95, size=30, color="dk1")
+        tsize = 30 if wrap_lines(sd["title"], 30, SW - 2 * MX - 1.2, True) == 1 else 22
+        self.set_title(s, sd["title"], y=0.95, size=tsize, color="dk1", w=SW - 2 * MX - 1.2)
         if sd.get("badge_new"):
             self.badge_new(s, SW - MX - 1.0, 1.02)
         gw = (SW - 2 * MX) / 12
@@ -896,7 +925,9 @@ class Builder:
         self.gradient(ov, [(0, "dk1", 0.55), (0.55, "dk1", 0.1), (1, "dk1", 0)], angle=0 if side == "l" else 180)
         x = MX if side == "l" else SW - MX - 6.0
         gy, gh = 1.15, 5.35
-        self.glass(s, x, gy, 6.0, gh, radius=0.07, under=(sd["image"], box, focus), strength=0.9)
+        self._veil = 0.72
+        self.glass(s, x, gy, 6.0, gh, radius=0.07, under=(sd["image"], box, focus), strength=0.8)
+        self._veil = None
         if sd.get("eyebrow"):
             self.eyebrow(s, x + 0.4, gy + 0.35, sd["eyebrow"])
         self._allow_2l = True
@@ -990,6 +1021,9 @@ class Builder:
         self.dark = True
         self.rect(s, 0, 0, SW, band_h, fill="dk1", name="Bandeau versus")
         self.halo(s, SW / 2, band_h / 2 + 0.1, 1.2, alpha=0.75)
+        for k, rr in enumerate((0.8, 1.05, 1.35)):
+            self.arc(s, SW / 2, 1.37, rr, 300, 60, width=1.2, color="accent3", alpha=0.5 - k * 0.12)
+            self.arc(s, SW / 2, 1.37, rr, 120, 240, width=1.2, color="accent3", alpha=0.5 - k * 0.12)
         self.eyebrow(s, MX, 0.3, sd.get("eyebrow", "Compétition · face-à-face"))
         fw, fh = 2.0, 1.55
         self._product_frame(s, MX, 0.7, fw, fh, ph, None)
@@ -1108,8 +1142,8 @@ class Builder:
         if sd.get("eyebrow"):
             self.eyebrow(s, MX, 0.62, sd["eyebrow"])
         self.set_title(s, sd["title"], y=0.95, size=26, color="dk1")
-        cols = [("Points forts du concurrent", sd.get("pros", []), "accent6", "+"),
-                ("Points d'attention", sd.get("cons", []), "accent1", "!")]
+        cols = [(sd.get("pros_label", "Points forts du concurrent"), sd.get("pros", []), "accent6", "+"),
+                (sd.get("cons_label", "Points d'attention"), sd.get("cons", []), "accent1", "!")]
         cw = (SW - 2 * MX - 0.4) / 2
         for i, (head, items, col, sym) in enumerate(cols):
             x = MX + i * (cw + 0.4)
@@ -1141,7 +1175,7 @@ class Builder:
         widths = sd.get("widths") or [1] * len(cols)
         tw = SW - 2 * MX
         ws = [tw * w / sum(widths) for w in widths]
-        y, rh = 2.3, sd.get("row_h", 0.6)
+        y, rh = sd.get("top", 2.3), sd.get("row_h", 0.6)
         self.rect(s, MX, y, tw, rh, fill="dk1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.15)
         x = MX
         for c, w in zip(cols, ws):
@@ -1151,10 +1185,584 @@ class Builder:
             y += rh
             x = MX
             for j, (c, w) in enumerate(zip(r, ws)):
-                self.text(s, x + 0.2, y, w - 0.3, rh, str(c), size=14, bold=(j == 0),
+                self.text(s, x + 0.2, y, w - 0.3, rh, str(c), size=sd.get("size", 14), bold=(j == 0),
                           color="accent1" if j == 0 else "dk1", anchor="m", check=False)
                 x += w
             self.rect(s, MX, y + rh, tw, 0.012, fill="dk1")
+        self.chrome(s, sd)
+
+    # ------------------------------------------------------------------ arcs et formes circulaires
+    def arc(self, s, cx, cy, r, start, end, width=2.0, color="accent1", alpha=1.0, glow=False, name="Arc"):
+        """Arc de cercle (trait) de start à end degrés, sens horaire, 0° = 3 h (convention PowerPoint)."""
+        sh = s.shapes.add_shape(MSO_SHAPE.ARC, Inches(cx - r), Inches(cy - r), Inches(2 * r), Inches(2 * r))
+        sh.name = name
+        sh.adjustments[0] = (start % 360) * 0.6
+        sh.adjustments[1] = (end % 360) * 0.6
+        sh.fill.background()
+        sh.line.color.rgb = self.color(color)
+        sh.line.width = Pt(width)
+        if alpha < 1:
+            self.alpha_line(sh, alpha)
+        sh.shadow.inherit = False
+        if glow:
+            self.glow(sh, color=color, rad=10, alpha=0.5)
+        return sh
+
+    def band_arc(self, s, cx, cy, r, start, sweep, thick=0.18, color="accent1", alpha=1.0, glow=True):
+        """Arc plein (blockArc) : jauge circulaire."""
+        sh = s.shapes.add_shape(MSO_SHAPE.BLOCK_ARC, Inches(cx - r), Inches(cy - r), Inches(2 * r), Inches(2 * r))
+        sh.name = "Jauge"
+        sh.adjustments[0] = (start % 360) * 0.6
+        sh.adjustments[1] = ((start + sweep) % 360) * 0.6
+        sh.adjustments[2] = thick / (2 * r)
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = self.color(color)
+        if alpha < 1:
+            self.alpha_fill(sh, alpha)
+        sh.line.fill.background()
+        sh.shadow.inherit = False
+        if glow:
+            self.glow(sh, color=color, rad=12, alpha=0.55)
+        return sh
+
+    def deco_arcs(self, s, cx, cy, radii, start=200, end=340, alpha=0.35, width=1.25):
+        for i, r in enumerate(radii):
+            self.arc(s, cx, cy, r, start, end, width=width, color="accent3" if self.dark else "accent1",
+                     alpha=alpha * (1 - i * 0.18), name="Arc décoratif")
+
+    def oval_pic(self, pic):
+        pic._element.spPr.find(qn("a:prstGeom")).set("prst", "ellipse")
+
+    def bullets(self, s, x, y, w, h, items, size=13, color=None, dot=None, para_space=6):
+        color = color or ("lt1" if self.dark else "dk1")
+        dot = dot or ("accent3" if self.dark else "accent1")
+        return self.text(s, x, y, w, h, [[("●  ", {"size": max(size - 5, 7), "color": dot}), (it, {})]
+                                         for it in items], size=size, color=color, para_space=para_space)
+
+    def head(self, s, sd, dark, title_w=None, size=30, y=0.95):
+        """Sur-titre facultatif + titre, renvoie l'ordonnée sous le titre."""
+        if sd.get("eyebrow"):
+            self.eyebrow(s, MX, 0.62, sd["eyebrow"])
+        self._allow_2l = True
+        self.set_title(s, sd["title"], y=y, w=title_w or (SW - 2 * MX), h=1.3, size=size,
+                       color="lt1" if dark else "dk1")
+        self._allow_2l = False
+        return y + self.title_lines * size * 1.18 / 72 + 0.25
+
+    # ------------------------------------------------------------------ nouveaux types
+    def s_gauges(self, sd):
+        """Jauges circulaires (pourcentages) : arcs pleins lumineux sur fond sombre."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=True)
+        top = self.head(s, sd, True)
+        if sd.get("lead"):
+            self.text(s, MX, top - 0.1, SW - 2 * MX, 0.4, sd["lead"], size=14, color="lt2")
+            top += 0.35
+        stats = sd["stats"]
+        n = len(stats)
+        cw = (SW - 2 * MX) / n
+        r = min(1.25, cw / 2 - 0.35)
+        cy = top + r + 0.25
+        self.halo(s, SW / 2, cy, 3.5, alpha=0.4)
+        for i, st in enumerate(stats):
+            cx = MX + cw * i + cw / 2
+            pct = st.get("pct")
+            ring = self.rect(s, cx - r, cy - r, 2 * r, 2 * r, line="lt1", shape=MSO_SHAPE.OVAL, line_w=10)
+            self.alpha_line(ring, 0.12)
+            if pct is not None:
+                self.band_arc(s, cx, cy, r + 0.07, 270, max(min(pct, 100), 1) * 3.6 - 0.01, thick=0.2)
+            else:
+                self.glass(s, cx - r + 0.2, cy - r + 0.2, 2 * r - 0.4, 2 * r - 0.4, radius=0.5)
+            val, unit = str(st["value"]), st.get("unit", "")
+            vs = 44
+            while text_width(val, vs, True) + text_width(unit, vs * 0.45, True) > 2 * r - 0.35 and vs > 18:
+                vs -= 2
+            self.text(s, cx - r, cy - 0.45, 2 * r, 0.9, [[(val, {"size": vs, "bold": True}),
+                                                          (f" {unit}" if unit else "", {"size": int(vs * 0.45),
+                                                                                        "bold": True,
+                                                                                        "color": "accent3"})]],
+                      align="c", anchor="m", check=False)
+            ly = cy + r + 0.3
+            self.text(s, cx - cw / 2 + 0.15, ly, cw - 0.3, 0.6, st["label"], size=14, bold=True, align="c")
+            if st.get("detail"):
+                self.text(s, cx - cw / 2 + 0.15, ly + 0.55, cw - 0.3, 6.1 - ly - 0.55 - (0.0), st["detail"], size=11,
+                          color="lt2", align="c")
+        self.chrome(s, sd)
+
+    def s_arcflow(self, sd):
+        """Étapes ou frise disposées le long d'un grand arc de cercle."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=sd.get("dark", True))
+        dark = self.dark
+        top = self.head(s, sd, dark, size=28)
+        if sd.get("lead"):
+            self.text(s, MX, top - 0.12, SW - 2 * MX, 0.4, sd["lead"], size=13, color="lt2" if dark else "dk2")
+        steps = sd["steps"]
+        n = len(steps)
+        import math
+        R, cx, cy = 6.4, SW / 2, 8.55
+        self.halo(s, cx, 3.0, 3.2, alpha=0.35 if dark else 0.18)
+        self.arc(s, cx, cy, R, 200, 340, width=3, color="accent1", glow=dark, name="Arc frise")
+        self.arc(s, cx, cy, R + 0.35, 205, 335, width=1, color="accent3" if dark else "accent1", alpha=0.4)
+        a0, a1 = 138, 42
+        for i, st in enumerate(steps):
+            th = math.radians(a0 + (a1 - a0) * (i / (n - 1) if n > 1 else 0.5))
+            x, y = cx + R * math.cos(th), cy - R * math.sin(th)
+            d = 0.62
+            node = self.rect(s, x - d / 2, y - d / 2, d, d, fill="accent1", shape=MSO_SHAPE.OVAL, name="Étape")
+            if dark:
+                self.glow(node, rad=12, alpha=0.6)
+            self.text(s, x - d / 2, y - d / 2, d, d, st.get("marker", f"{i + 1}"), size=12 if
+                      len(st.get("marker", "1")) < 4 else 9, bold=True, color="lt1", align="c", anchor="m", check=False)
+            bw = min(2.6, (SW - 2 * MX) / n - 0.1)
+            by = y + 0.45
+            x = min(max(x, MX + bw / 2), SW - MX - bw / 2)
+            self.text(s, x - bw / 2, by, bw, 0.4, st["title"], size=14, bold=True, align="c",
+                      color="lt1" if dark else "dk1")
+            if st.get("text"):
+                txt = st["text"] if isinstance(st["text"], list) else [st["text"]]
+                self.text(s, x - bw / 2, by + 0.42, bw, max(0.6, 6.7 - by - 0.5), txt, size=10.5,
+                          color="lt2" if dark else "dk2", align="c", para_space=3)
+        self.chrome(s, sd)
+
+    def s_hub(self, sd):
+        """Visuel central cerclé + éléments en couronne (cartes de verre)."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=True)
+        top = self.head(s, sd, True, size=28)
+        cx, cy, r = SW / 2, max(top + 1.75, 3.95), 1.45
+        self.halo(s, cx, cy, 2.8, alpha=0.6)
+        for k, rr in enumerate([r + 0.25, r + 0.55, r + 0.95]):
+            self.arc(s, cx, cy, rr, 0, 359.9, width=1, color="accent3", alpha=0.35 - k * 0.08)
+        if sd.get("image"):
+            pic = self.image(s, sd["image"], cx - r, cy - r, 2 * r, 2 * r, focus=tuple(sd.get("focus", (0.5, 0.5))))
+            self.oval_pic(pic)
+        else:
+            self.text(s, cx - r, cy - 0.5, 2 * r, 1.0, sd.get("center", ""), size=20, bold=True, align="c", anchor="m")
+        ring = self.rect(s, cx - r, cy - r, 2 * r, 2 * r, line="accent1", shape=MSO_SHAPE.OVAL, line_w=2.5)
+        self.glow(ring, rad=14, alpha=0.6)
+        items = sd["items"]
+        left, right = items[: (len(items) + 1) // 2], items[(len(items) + 1) // 2:]
+        gw, gap = 3.55, 0.15
+        for side, group in ((-1, left), (1, right)):
+            n = len(group)
+            gh = min(1.25, (6.55 - top - gap * (n - 1)) / max(n, 1))
+            total = n * gh + (n - 1) * gap
+            y0 = cy - total / 2
+            for k, it in enumerate(group):
+                gx = MX if side < 0 else SW - MX - gw
+                gy = max(top, y0) + k * (gh + gap)
+                self.glass(s, gx, gy, gw, gh, radius=0.12)
+                tl = wrap_lines(it["title"], 13, gw - 0.4, True)
+                self.text(s, gx + 0.22, gy + 0.1, gw - 0.4, 0.25 * tl + 0.1, it["title"], size=13, bold=True,
+                          color="accent3")
+                if it.get("text"):
+                    ty_ = gy + 0.14 + 0.24 * tl
+                    self.text(s, gx + 0.22, ty_, gw - 0.4, gy + gh - ty_ - 0.05, it["text"], size=10.5 if gh > 1.1
+                              else 10)
+        self.chrome(s, sd)
+
+    def s_gallery(self, sd):
+        """Galerie clinique : 1 ou 2 cas par slide, chacun avec 1 à 3 images légendées (sans recadrage)."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=True)
+        cases = sd["cases"]
+        if sd.get("eyebrow"):
+            self.eyebrow(s, MX, 0.62, sd["eyebrow"])
+        if len(cases) == 1 or sd.get("title"):
+            top = self.head(s, {"title": sd.get("title") or cases[0]["title"]}, True, size=24)
+        else:
+            top = 0.95
+            if s.shapes.title is not None:  # titre accessible (plan, lecteurs d'écran), hors champ visuel
+                self.set_title(s, "Galerie – " + (sd.get("eyebrow") or "images cliniques"), x=MX, y=0.0, w=0.1,
+                               h=0.1, size=1, color="dk1")
+        n = len(cases)
+        cw = (SW - 2 * MX - 0.3 * (n - 1)) / n
+        for ci, c in enumerate(cases):
+            if c.get("page") and not c.get("images"):  # toutes les images de la page source, dans l'ordre
+                kind, pg = c["page"].split("-")
+                paths = self.page_images(kind, int(pg))
+                caps = c.get("captions", [])
+                c["images"] = [{"image": str(p.relative_to(self.img_root)), "caption": caps[k] if k < len(caps) else ""}
+                               for k, p in enumerate(paths)] or [{"hint": f"visuels de la page {c['page']}"}]
+            x0 = MX + ci * (cw + 0.3)
+            y = top
+            if n > 1 or sd.get("title"):
+                self.text(s, x0, y, cw, 0.62, c["title"], size=15 if n > 1 else 17, bold=True, check=False)
+                y += 0.62 if len(c["title"]) > 52 * cw / 6 else 0.4
+            if c.get("text"):
+                self.text(s, x0, y, cw, 0.5, c["text"], size=10.5, color="lt2")
+                y += 0.5
+            imgs = c["images"]
+            m = len(imgs)
+            iw = (cw - 0.15 * (m - 1)) / m
+            extra = (0.42 if any(i.get("caption") for i in imgs) else 0.1) + (0.35 if sd.get("footnotes") else 0)
+            extra += 0.32 * bool(c.get("legend")) + 0.25 * bool(c.get("params"))
+            ih = 6.2 - y - extra
+            if c.get("legend") or c.get("params"):
+                ly = y + ih + 0.08
+                lines = []
+                if c.get("legend"):
+                    lines.append([("De gauche à droite : ", {"bold": True, "color": "accent3"}), (c["legend"], {})])
+                if c.get("params"):
+                    lines.append([(c["params"], {"color": "lt2", "size": 8.5})])
+                self.text(s, x0, ly, cw, 0.6, lines, size=9.5, color="lt1", check=False)
+            # taille réelle de chaque image ajustée à sa case, rangée centrée verticalement
+            dims = []
+            for im in imgs:
+                pth = self.resolve_image(im["image"]) if im.get("image") else None
+                if pth is not None and pth.exists():
+                    with Image.open(pth) as pim:
+                        r_ = pim.width / pim.height
+                    w_, h_ = (iw, iw / r_) if r_ > iw / ih else (ih * r_, ih)
+                else:
+                    w_, h_ = iw, ih
+                dims.append((w_, h_))
+            rowh = max(h for _, h in dims)
+            yy = y + (ih - rowh) / 2
+            for k, (im, (w_, h_)) in enumerate(zip(imgs, dims)):
+                ix = x0 + k * (iw + 0.15) + (iw - w_) / 2
+                iy = yy + (rowh - h_) / 2
+                if im.get("image") and self.resolve_image(im["image"]) is not None:
+                    fr = self.rect(s, ix - 0.04, iy - 0.04, w_ + 0.08, h_ + 0.08, fill="dk2", line="accent3",
+                                   shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.03, line_w=0.5)
+                    self.alpha_line(fr, 0.4)
+                    self.image(s, im["image"], ix, iy, w_, h_, mode="contain")
+                else:
+                    self.visual_placeholder(s, ix, iy, w_, h_, im.get("hint", ""))
+                if im.get("caption"):
+                    self.text(s, ix, y + ih + 0.06, iw, 0.36, im["caption"], size=9.5, color="lt2", align="c",
+                              check=False)
+        self.chrome(s, sd)
+
+    def s_options(self, sd):
+        """Options cliniques d'un produit : niveaux / packs + matrice par configuration."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=False)
+        top = self.head(s, sd, False, size=26)
+        groups = sd["groups"]
+        sym = {"inclus": ("✓", "accent1", True), "option": ("+", "accent1", False), "non": ("–", "lt2", False)}
+
+        def matrix(x, y, mx_w, m):
+            cols, rows = m["cols"], m["rows"]
+            lw = 1.05
+            cwm = (mx_w - lw) / len(cols)
+            for j, c in enumerate(cols):
+                self.text(s, x + lw + j * cwm, y, cwm, 0.3, c, size=9, bold=True, color="dk2", align="c", check=False)
+            for i, row in enumerate(rows):
+                ry = y + 0.32 + i * 0.36
+                self.rect(s, x, ry, mx_w, 0.01, fill="lt2")
+                self.text(s, x, ry, lw, 0.36, row[0], size=10, bold=True, color="dk1", anchor="m", check=False)
+                for j, v in enumerate(row[1:]):
+                    g, col, filled = sym.get(v, (v, "dk1", False))
+                    ox = x + lw + j * cwm + cwm / 2 - 0.13
+                    if v in sym and v != "non":
+                        self.rect(s, ox, ry + 0.05, 0.26, 0.26, fill=col if filled else None,
+                                  line=None if filled else col, shape=MSO_SHAPE.OVAL, line_w=1.25)
+                    self.text(s, ox, ry + 0.05, 0.26, 0.26, g, size=10, bold=True,
+                              color="lt1" if filled else col, align="c", anchor="m", check=False)
+            return y + 0.32 + len(rows) * 0.36
+
+        avail_h = 6.35 - top
+        big = [g for g in groups if g.get("levels")]
+        small = [g for g in groups if not g.get("levels")]
+        y = top
+        for g in big:
+            levels = g["levels"]
+            self.token(s, MX, y, 0.42, g.get("icon", g["name"][:2]), size=9, filled=True)
+            self.text(s, MX + 0.55, y + 0.04, 6, 0.36, g["name"], size=16, bold=True, color="dk1")
+            mw = 4.2 if g.get("matrix") else 0
+            lw = (SW - 2 * MX - mw - 0.3) / len(levels)
+            ly = y + 0.55
+            h = sd.get("level_h", 1.9 if small else avail_h - 0.6)
+            for k, lv in enumerate(levels):
+                lx = MX + k * lw
+                self.rect(s, lx, ly, lw - 0.2, 0.012, fill="dk1")
+                self.text(s, lx, ly + 0.08, lw - 0.25, 0.3, lv["name"], size=12, bold=True, color="accent1")
+                self.bullets(s, lx, ly + 0.42, lw - 0.25, h - 0.45, lv["items"], size=10.5, para_space=2)
+            if g.get("matrix"):
+                matrix(SW - MX - mw, ly, mw, g["matrix"])
+            y = ly + h + 0.1
+        if small:
+            sw_ = (SW - 2 * MX - 0.3 * (len(small) - 1)) / len(small)
+            for k, g in enumerate(small):
+                x = MX + k * (sw_ + 0.3)
+                self.token(s, x, y, 0.42, g.get("icon", g["name"][:2]), size=9, filled=True)
+                self.text(s, x + 0.55, y + 0.04, sw_ - 0.6, 0.36, g["name"], size=15, bold=True, color="dk1")
+                mw = min(2.4, sw_ * 0.42) if g.get("matrix") else 0
+                bh = 6.35 - y - 0.55
+                self.bullets(s, x, y + 0.55, sw_ - mw - 0.2, bh, g.get("items", []), size=10.5, para_space=2)
+                if g.get("matrix"):
+                    matrix(x + sw_ - mw, y + 0.5, mw, g["matrix"])
+        legend_y = 6.5
+        for k, (lab, key) in enumerate((("Inclus", "inclus"), ("En option", "option"))):
+            g, col, filled = sym[key]
+            lx = MX + k * 1.6
+            self.rect(s, lx, legend_y + 0.03, 0.22, 0.22, fill=col if filled else None, line=None if filled else col,
+                      shape=MSO_SHAPE.OVAL, line_w=1)
+            self.text(s, lx, legend_y + 0.03, 0.22, 0.22, g, size=8, bold=True, color="lt1" if filled else col,
+                      align="c", anchor="m", check=False)
+            self.text(s, lx + 0.3, legend_y, 1.3, 0.28, lab, size=9, color="dk2", anchor="m", check=False)
+        self.chrome(s, sd)
+
+    def s_list(self, sd):
+        """Liste compacte (base installée) : en-tête produit + tableau multi-colonnes à filets fins."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=False)
+        top = self.head(s, sd, False, title_w=8.6, size=26)
+        if sd.get("image"):
+            self.halo(s, SW - MX - 1.1, 1.15, 1.0, alpha=0.25)
+            self.image(s, sd["image"], SW - MX - 2.2, 0.45, 2.2, 1.3, mode="contain")
+        if sd.get("count") is not None:
+            self.text(s, SW - MX - 4.6, 0.55, 2.3, 1.0, [[(str(sd["count"]), {"size": 44, "bold": True,
+                                                                               "color": "accent1"})],
+                                                          [(sd.get("count_label", "installés"), {"size": 10,
+                                                                                                "color": "dk2"})]],
+                      align="r", check=False)
+        cols = sd["columns"]
+        rows = sd["rows"]
+        ncol = sd.get("blocks", 1 if len(rows) <= 12 else (2 if len(rows) <= 34 else 3))
+        per = (len(rows) + ncol - 1) // ncol
+        bw = (SW - 2 * MX - 0.3 * (ncol - 1)) / ncol
+        widths = sd.get("widths") or [1] * len(cols)
+        rh = min(0.42, (6.4 - top - 0.35) / max(per, 1))
+        fs = 11 if rh >= 0.3 else (9 if rh >= 0.22 else 8)
+        for b in range(ncol):
+            x0 = MX + b * (bw + 0.3)
+            ws = [bw * w / sum(widths) for w in widths]
+            x = x0
+            for c, w in zip(cols, ws):
+                self.text(s, x, top, w - 0.05, 0.3, c, size=9, bold=True, color="accent1", spacing=80, check=False)
+                x += w
+            self.rect(s, x0, top + 0.3, bw, 0.014, fill="dk1")
+            for i, r in enumerate(rows[b * per:(b + 1) * per]):
+                y = top + 0.33 + i * rh
+                if i % 2:
+                    band = self.rect(s, x0, y, bw, rh, fill="accent3")
+                    self.alpha_fill(band, 0.45)
+                x = x0
+                for j, (c, w) in enumerate(zip(r, ws)):
+                    self.text(s, x + 0.05, y, w - 0.1, rh, str(c), size=fs, bold=(j == 0), color="dk1",
+                              anchor="m", check=False)
+                    x += w
+        self.chrome(s, sd)
+
+    def s_sites(self, sd):
+        """Fiches sites de visite (2 par slide)."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=False)
+        top = self.head(s, sd, False, size=24)
+        sites = sd["sites"]
+        n = len(sites)
+        cw = (SW - 2 * MX - 0.3 * (n - 1)) / n
+        for k, st in enumerate(sites):
+            x0 = MX + k * (cw + 0.3)
+            y0 = top
+            card = self.rect(s, x0, y0, cw, 6.6 - y0, fill="lt1", line="lt2", shape=MSO_SHAPE.ROUNDED_RECTANGLE,
+                             radius=0.03)
+            self.soft_shadow(card, alpha=0.12)
+            hd = self.rect(s, x0, y0, cw, 0.62, fill="dk1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.18)
+            self.text(s, x0 + 0.2, y0, cw - 2.4, 0.62, [[(st["name"], {"bold": True, "size": 14})],
+                                                         [(st.get("city", ""), {"size": 9, "color": "lt2"})]],
+                      color="lt1", anchor="m", check=False)
+            sysw = 2.1
+            b = self.rect(s, x0 + cw - sysw - 0.15, y0 + 0.14, sysw, 0.34, fill="accent1",
+                          shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.5)
+            self.text(s, x0 + cw - sysw - 0.15, y0 + 0.14, sysw, 0.34, st.get("system", ""), size=10, bold=True,
+                      color="lt1", align="c", anchor="m", check=False)
+            y = y0 + 0.75
+            img_w = 1.9 if st.get("image") else 0
+            if st.get("image"):
+                pic = self.image(s, st["image"], x0 + cw - img_w - 0.15, y, img_w, 1.35)
+                self.round_pic(pic, 0.08)
+            colw = (cw - img_w - 0.45) / 2
+            fields = [("CT", st.get("ct", [])), ("ISP", st.get("isp", [])), ("Infos", st.get("info", [])),
+                      ("Spécialités", st.get("specialites", []))]
+            for i, (lab, vals) in enumerate(fields):
+                fx = x0 + 0.15 + (i % 2) * (colw + 0.15)
+                fy = y + (i // 2) * 0.95
+                self.text(s, fx, fy, colw, 0.25, lab.upper(), size=8, bold=True, color="accent1", spacing=100,
+                          check=False)
+                vals = vals if isinstance(vals, list) else [vals]
+                self.text(s, fx, fy + 0.24, colw, 0.68, [v for v in vals] or ["—"], size=8.5, color="dk1", line=0.95,
+                          check=False)
+            y += 1.95
+            if st.get("comments"):
+                self.text(s, x0 + 0.15, y - 0.05, cw - 0.3, 0.32, [[("Commentaires : ", {"bold": True}),
+                                                                    (st["comments"], {})]], size=8.5, color="dk1",
+                          check=False)
+                y += 0.3
+            sched = st.get("schedule")
+            if sched:
+                days = sched["days"]
+                slots = sched.get("slots", ["Matin", "Après-midi"])
+                gx, gw_ = x0 + 0.15, cw - 0.3
+                dw = (gw_ - 0.9) / len(days)
+                self.text(s, gx, y, 0.9, 0.22, sched.get("label", ""), size=7.5, bold=True, color="dk2", check=False)
+                for d_i, d in enumerate(days):
+                    self.text(s, gx + 0.9 + d_i * dw, y, dw, 0.22, d, size=7.5, bold=True, color="dk2", align="c",
+                              check=False)
+                for r_i, row in enumerate(sched["rows"]):
+                    ry = y + 0.24 + r_i * 0.27
+                    self.text(s, gx, ry, 0.9, 0.25, row["name"], size=7.5, bold=True, color="dk1", anchor="m",
+                              check=False)
+                    for d_i, cell in enumerate(row["cells"]):
+                        c = self.rect(s, gx + 0.9 + d_i * dw + 0.02, ry + 0.02, dw - 0.04, 0.22,
+                                      fill="accent3" if cell else "lt2", shape=MSO_SHAPE.ROUNDED_RECTANGLE,
+                                      radius=0.3)
+                        self.text(s, gx + 0.9 + d_i * dw, ry + 0.02, dw, 0.22, cell or "", size=6.5, color="dk1",
+                                  align="c", anchor="m", check=False)
+                y = y + 0.3 + len(sched["rows"]) * 0.27
+            contact = st.get("contact", [])
+            if contact:
+                ch = 6.5 - y
+                g = self.rect(s, x0 + 0.15, y, cw - 0.3, ch, fill="accent3", shape=MSO_SHAPE.ROUNDED_RECTANGLE,
+                              radius=0.08)
+                self.alpha_fill(g, 0.55)
+                self.text(s, x0 + 0.3, y + 0.06, cw - 0.6, ch - 0.1,
+                          [[("CONTACT", {"bold": True, "size": 8, "color": "accent1"})]] + contact, size=8,
+                          color="dk1", line=0.95, check=False)
+        self.chrome(s, sd)
+
+    def s_study(self, sd):
+        """Publication : visuel de l'étude + chiffre clé + conclusions."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=False)
+        top = self.head(s, sd, False, size=24)
+        iw = 5.6
+        if sd.get("image"):
+            bg = self.rect(s, MX, top, iw, 6.3 - top, fill="dk1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.04)
+            self.dark = True
+            self.halo(s, MX + iw / 2, top + (6.3 - top) / 2, 2.2, alpha=0.4)
+            self.dark = False
+            self.image(s, sd["image"], MX + 0.15, top + 0.15, iw - 0.3, 6.3 - top - 0.3, mode="contain")
+        x = MX + iw + 0.4
+        w = SW - MX - x
+        y = top
+        if sd.get("eyebrow2"):
+            self.text(s, x, y, w, 0.3, sd["eyebrow2"].upper(), size=9, bold=True, color="accent1", spacing=150)
+            y += 0.35
+        if sd.get("stat"):
+            st = sd["stat"]
+            self.text(s, x, y - 0.1, w, 1.2, [[(str(st["value"]), {"size": 66, "bold": True, "color": "accent1"}),
+                                               (" " + st.get("unit", ""), {"size": 26, "bold": True,
+                                                                           "color": "accent1"})]], check=False)
+            y += 1.1
+            self.text(s, x, y, w, 0.75, st["label"], size=14, bold=True, color="dk1")
+            y += 0.8
+        ref_h = 0.2 + 0.16 * wrap_lines(sd.get("reference", ""), 8.5, w) if sd.get("reference") else 0
+        if sd.get("points"):
+            ph = min(0.66, (6.3 - ref_h - y) / len(sd["points"]))
+            for p in sd["points"]:
+                self.rect(s, x, y, w, 0.012, fill="lt2")
+                self.text(s, x, y + 0.06, w, ph - 0.06, p, size=11 if ph > 0.5 else 10, color="dk1")
+                y += ph
+        if sd.get("reference"):
+            self.text(s, x, 6.3 - ref_h, w, ref_h, sd["reference"], size=8.5, italic=True, color="dk2", anchor="b")
+        self.chrome(s, sd)
+
+    def s_feature(self, sd):
+        """Visuel + titre + points (≤ 5) ; clair ou sombre, visuel à gauche ou à droite."""
+        s = self.new_slide(sd)
+        dark = sd.get("dark", False)
+        self.frame(s, dark=dark)
+        side = sd.get("image_side", "r")
+        iw = sd.get("image_w", 5.4)
+        has = bool(sd.get("image")) or sd.get("image_hint")
+        tx = MX if side == "r" or not has else MX + iw + 0.45
+        tw = (SW - 2 * MX - (iw + 0.45 if has else 0))
+        top = self.head(s, {**sd, "title": sd["title"]}, dark, title_w=tw if has else None, size=sd.get("title_size", 28))
+        if tx != MX:  # titre à droite du visuel
+            ph = s.shapes.title
+            ph.left = Inches(tx)
+        ix = SW - MX - iw if side == "r" else MX
+        if sd.get("image"):
+            iy, ih = 0.62 if not dark else 0.0, 6.0 if not dark else SH
+            if sd.get("footnotes") and not dark:
+                ih = min(ih, sd.get("footnotes_y", 6.45) - iy - 0.12)
+            if dark:
+                box = (ix - (MX if side == "r" else 0), 0, iw + MX, SH)
+                self.image(s, sd["image"], *box, mode=sd.get("image_mode", "cover"),
+                           focus=tuple(sd.get("focus", (0.5, 0.5))))
+                ov = self.rect(s, box[0] if side == "r" else box[0] + box[2] - 1.2, 0, 1.2, SH, fill="dk1")
+                self.gradient(ov, [(0, "dk1", 1), (1, "dk1", 0)], angle=0 if side == "r" else 180)
+            else:
+                if sd.get("image_mode") == "contain" or self.has_alpha(sd["image"]):
+                    bg = self.rect(s, ix, iy, iw, ih, fill="dk1", shape=MSO_SHAPE.ROUNDED_RECTANGLE, radius=0.04)
+                    self.dark = True
+                    self.halo(s, ix + iw / 2, iy + ih / 2, min(iw, ih) / 2, alpha=0.5)
+                    self.dark = False
+                    self.image(s, sd["image"], ix + 0.15, iy + 0.15, iw - 0.3, ih - 0.3, mode="contain")
+                else:
+                    pic = self.image(s, sd["image"], ix, iy, iw, ih, focus=tuple(sd.get("focus", (0.5, 0.5))))
+                    self.round_pic(pic, 0.04)
+        elif sd.get("image_hint"):
+            self.visual_placeholder(s, ix, 0.9, iw, 5.3, sd["image_hint"])
+        y = top
+        if sd.get("lead"):
+            self.text(s, tx, y - 0.05, tw, 0.9, sd["lead"], size=15, bold=True, color="accent3" if dark else "accent1")
+            y += 0.1 + wrap_lines(sd["lead"], 15, tw, True) * 0.27
+        pts = sd.get("points", [])
+        if pts and isinstance(pts[0], dict):
+            ph = min(1.15, (6.3 - y) / len(pts) - 0.08)
+            for p in pts:
+                self.rect(s, tx, y, tw, 0.012, fill="lt2" if not dark else "accent3")
+                self.text(s, tx, y + 0.08, tw, 0.32, p["title"], size=13.5, bold=True,
+                          color="accent3" if dark else "accent1")
+                if p.get("text"):
+                    self.text(s, tx, y + 0.4, tw, ph - 0.42, p["text"], size=11, color="lt1" if dark else "dk1")
+                y += ph + 0.08
+        elif pts:
+            self.bullets(s, tx, y, tw, 6.3 - y, pts, size=sd.get("size", 13))
+        if sd.get("body"):
+            self.text(s, tx, y, tw, 6.3 - y, sd["body"], size=sd.get("size", 13), color="lt1" if dark else "dk1",
+                      para_space=6)
+        self.chrome(s, sd)
+
+    def s_grid(self, sd):
+        """Grille de 2 à 6 cartes (picto + titre + texte) ; claire par défaut, verre en sombre."""
+        s = self.new_slide(sd)
+        dark = sd.get("dark", False)
+        self.frame(s, dark=dark)
+        top = self.head(s, sd, dark, size=28)
+        if sd.get("lead"):
+            self.text(s, MX, top - 0.1, SW - 2 * MX, 0.45, sd["lead"], size=13, color="lt2" if dark else "dk2")
+            top += 0.45
+        cards = sd["cards"]
+        n = len(cards)
+        cols = sd.get("cols") or (n if n <= 4 else 3)
+        rows = (n + cols - 1) // cols
+        gap = 0.25
+        cw = (SW - 2 * MX - gap * (cols - 1)) / cols
+        bottom = sd.get("bottom", 6.4)
+        ch = min(sd.get("card_h", 2.9), (bottom - top - gap * (rows - 1)) / rows)
+        if dark:
+            self.halo(s, SW / 2, top + (bottom - top) / 2, 3.2, alpha=0.45)
+        for i, c in enumerate(cards):
+            x, y = MX + (i % cols) * (cw + gap), top + (i // cols) * (ch + gap)
+            if dark:
+                self.glass(s, x, y, cw, ch, radius=0.07)
+            else:
+                card = self.rect(s, x, y, cw, ch, fill="lt1", line="lt2", shape=MSO_SHAPE.ROUNDED_RECTANGLE,
+                                 radius=0.05)
+                self.soft_shadow(card, alpha=0.1)
+            yy = y + 0.25
+            if c.get("image"):
+                pic = self.image(s, c["image"], x + 0.2, yy, cw - 0.4, min(1.6, ch * 0.42),
+                                 mode=c.get("image_mode", "cover"))
+                if c.get("image_mode") != "contain":
+                    self.round_pic(pic, 0.06)
+                yy += min(1.6, ch * 0.42) + 0.15
+            elif c.get("icon"):
+                self.token(s, x + 0.25, yy, 0.55, c["icon"], size=9 if len(c["icon"]) > 3 else 11, filled=True)
+                yy += 0.7
+            self.text(s, x + 0.25, yy, cw - 0.5, 0.6, c["title"], size=14, bold=True,
+                      color="accent3" if dark else "accent1")
+            yy += 0.25 + wrap_lines(c["title"], 14, cw - 0.5, True) * 0.25
+            if c.get("text"):
+                body = c["text"] if isinstance(c["text"], list) else [c["text"]]
+                self.text(s, x + 0.25, yy, cw - 0.5, y + ch - yy - 0.15, body, size=c.get("size", 11),
+                          color="lt1" if dark else "dk1", para_space=3)
         self.chrome(s, sd)
 
     # ------------------------------------------------------------------ assemblage
