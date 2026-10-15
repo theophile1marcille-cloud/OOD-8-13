@@ -1,6 +1,6 @@
 """Étape 1 – Analyse des sources (rejouable).
 
-Les deux sources ont été fournies en PDF (export des .pptx), découpées en parties.
+Les sources ont été fournies en PDF (export des .pptx), découpées en parties.
 Pour chaque document : texte par page, rendu PNG, images embarquées
 (page d'origine, dimensions natives, résolution effective), dédoublonnées.
 Le thème est lu dans le seul .pptx disponible (couverture 2026).
@@ -23,45 +23,52 @@ def npages(pdf):
     return int(re.search(r"Pages:\s+(\d+)", out).group(1))
 
 def extract_doc(name, folder):
+    """Texte (pdftotext -layout) + images (PyMuPDF, masque de transparence recombiné)."""
+    import pymupdf
     img_dir = OUT / "images" / name
     img_dir.mkdir(parents=True, exist_ok=True)
     pages, images, seen, offset = [], [], {}, 0
     for pdf in parts(folder):
-        n = npages(pdf)
-        listing = subprocess.run(["pdfimages", "-list", str(pdf)], capture_output=True, text=True).stdout.splitlines()[2:]
-        meta = {}
-        for line in listing:
-            c = line.split()
-            if len(c) > 13:
-                meta[int(c[1])] = {"type": c[2], "ppi_x": c[12]}
-        tmp = img_dir / "_tmp"
-        tmp.mkdir(exist_ok=True)
-        subprocess.run(["pdfimages", "-png", "-p", str(pdf), str(tmp / "i")], check=True)
-        for f in sorted(tmp.glob("i-*.png")):
-            _, pg, num = f.stem.split("-")
-            page, num = offset + int(pg), int(num)
-            if meta.get(num, {}).get("type") == "smask":
-                f.unlink(); continue
-            with Image.open(f) as im:
-                w, h = im.size
-            if min(w, h) < MIN_SIDE:
-                f.unlink(); continue
-            digest = hashlib.md5(f.read_bytes()).hexdigest()[:12]
-            if digest in seen:
-                seen[digest]["pages"].append(page); f.unlink(); continue
-            dest = img_dir / f"p{page:03d}_{digest}.png"
-            f.rename(dest)
-            rec = {"file": str(dest.relative_to(OUT)), "pages": [page], "w": w, "h": h,
-                   "ppi": meta.get(num, {}).get("ppi_x")}
-            seen[digest] = rec; images.append(rec)
-        tmp.rmdir()
-        for i in range(1, n + 1):
+        doc = pymupdf.open(pdf)
+        for i, page in enumerate(doc, start=1):
+            pno = offset + i
+            for info in page.get_image_info(xrefs=True):
+                xref = info["xref"]
+                if not xref:
+                    continue
+                base = pymupdf.Pixmap(doc, xref)
+                smask = doc.xref_get_key(xref, "SMask")
+                if smask[0] == "xref":
+                    try:
+                        base = pymupdf.Pixmap(base, pymupdf.Pixmap(doc, int(smask[1].split()[0])))
+                    except Exception:
+                        pass
+                if base.colorspace and base.colorspace.n not in (1, 3):
+                    base = pymupdf.Pixmap(pymupdf.csRGB, base)
+                w, h = base.width, base.height
+                if min(w, h) < MIN_SIDE:
+                    continue
+                data = base.tobytes("png")
+                digest = hashlib.md5(data).hexdigest()[:12]
+                bbox = [round(v, 1) for v in info["bbox"]]
+                if digest in seen:
+                    if pno not in seen[digest]["pages"]:
+                        seen[digest]["pages"].append(pno)
+                    continue
+                dest = img_dir / f"p{pno:03d}_{digest}.png"
+                dest.write_bytes(data)
+                rec = {"file": str(dest.relative_to(OUT)), "pages": [pno], "w": w, "h": h,
+                       "alpha": bool(base.alpha), "bbox_pt": bbox,
+                       "page_size_pt": [round(page.rect.width), round(page.rect.height)]}
+                seen[digest] = rec
+                images.append(rec)
+        for i in range(1, len(doc) + 1):
             txt = subprocess.run(["pdftotext", "-layout", "-f", str(i), "-l", str(i), str(pdf), "-"],
                                  capture_output=True, text=True).stdout
             lines = [l.strip() for l in txt.splitlines() if l.strip()]
             pages.append({"page": offset + i, "part": pdf.name, "text": "\n".join(lines),
                           "copyright": [l for l in lines if "Koninklijke" in l]})
-        offset += n
+        offset += len(doc)
     return pages, images
 
 def theme_from_pptx(pptx):
