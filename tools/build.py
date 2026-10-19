@@ -1351,6 +1351,29 @@ class Builder:
             self.text(s, rx0 + rw / 2 - 1.7, top + 0.1, 3.4, 0.6, sd["ring_tag"], size=18, bold=True,
                       color="lt1", align="c", anchor="m", check=False)
         self.halo(s, rx0 + rw / 2, cy, 2.8, alpha=0.5)
+        if sd.get("venn"):  # trois cercles translucides qui se chevauchent (triangle)
+            rr = sd.get("venn_r", 1.05)
+            vcx, vcy = rx0 + rw / 2, top + 0.85 + rr
+            spots = [(vcx, vcy), (vcx - rr * 1.05, vcy + rr * 1.5), (vcx + rr * 1.05, vcy + rr * 1.5)]
+            shades = ["accent1", "accent1/lt1/0.3", "accent1/dk2/0.45"]
+            for (cx, cy_), rg, col in zip(spots, rings, shades):
+                c = self.rect(s, cx - rr, cy_ - rr, 2 * rr, 2 * rr, fill=col, shape=MSO_SHAPE.OVAL, name="Cercle")
+                self.alpha_fill(c, 0.82)
+                self.glow(c, rad=14, alpha=0.35)
+            for (cx, cy_), rg in zip(spots, rings):
+                fg = "lt1"
+                self.text(s, cx - rr + 0.2, cy_ - 0.72, 2 * rr - 0.4, 0.8, rg["label"], size=11, color=fg, align="c",
+                          anchor="b", check=False)
+                self.text(s, cx - rr, cy_ + 0.05, 2 * rr, 0.6, [[(str(rg["value"]), {"size": 28, "bold": True}),
+                                                                (rg.get("unit", ""), {"size": 16, "bold": True})]],
+                          align="c", anchor="t", check=False)
+            if sd.get("image"):
+                iy = vcy + rr * 2.55 + 0.1
+                self.image(s, sd["image"], rx0 + 0.5, iy, rw - 1.0, 6.35 - iy, mode="contain")
+            if sd.get("footnotes"):
+                pass
+            self.chrome(s, sd)
+            return
         for i, rg in enumerate(rings):
             cx = rx0 + cw * i + cw / 2
             # arc circulaire autour de l'anneau (flèche de cycle), alterné haut / bas comme dans la source
@@ -1366,6 +1389,51 @@ class Builder:
                       align="c", color="lt1")
         if sd.get("caption"):
             self.text(s, rx0, cy + r + 1.35, rw, 0.6, sd["caption"], size=11, color="lt2", align="c")
+        self.chrome(s, sd)
+
+    def s_showcase(self, sd):
+        """Points (titre + texte) à gauche, visuel héros sous verre à droite avec étiquette,
+        bandeau d'images légendées en bas (fond sombre)."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=True)
+        top = self.head(s, sd, True, size=28)
+        strip = sd.get("strip", [])
+        sh_ = 1.75 if strip else 0
+        bottom = 6.25 - (sh_ + 0.45 if strip else 0)
+        lw = sd.get("left_w", 5.9)
+        pts = sd.get("points", [])
+        ph = (bottom - top) / max(len(pts), 1)
+        for i, p in enumerate(pts):
+            py = top + i * ph
+            if i:
+                ln = self.rect(s, MX, py - 0.04, lw, 0.012, fill="accent3")
+                self.alpha_fill(ln, 0.45)
+            self.text(s, MX, py, lw, 0.34, p["title"], size=14, bold=True, color="accent3", check=False)
+            self.text(s, MX, py + 0.33, lw, ph - 0.38, p["text"], size=12, color="lt1")
+        if sd.get("image"):
+            ix, iw = MX + lw + 0.45, SW - 2 * MX - lw - 0.45
+            iy, ih = top - 0.1, bottom - top + 0.05
+            self.halo(s, ix + iw / 2, iy + ih / 2, min(iw, ih) * 0.7, alpha=0.5)
+            pic = self.image(s, sd["image"], ix, iy, iw, ih, focus=tuple(sd.get("focus", (0.5, 0.5))))
+            if pic is not None:
+                self.round_pic(pic, 0.04)
+            if sd.get("tag"):
+                tw = min(iw - 0.4, 3.6)
+                self.glass(s, ix + iw - tw - 0.2, iy + ih - 0.85, tw, 0.65, radius=0.3,
+                           under=(sd["image"], (ix, iy, iw, ih), tuple(sd.get("focus", (0.5, 0.5)))))
+                self.text(s, ix + iw - tw - 0.2, iy + ih - 0.85, tw, 0.65, sd["tag"], size=14, bold=True,
+                          color="lt1", align="c", anchor="m", check=False)
+        if strip:
+            n = len(strip)
+            gap = 0.3
+            cw = (SW - 2 * MX - gap * (n - 1)) / n
+            y0 = bottom + 0.2
+            for i, it in enumerate(strip):
+                x = MX + i * (cw + gap)
+                self.glass(s, x, y0, cw, sh_, radius=0.05)
+                self.image(s, it["image"], x + 0.1, y0 + 0.1, cw - 0.2, sh_ - 0.2, mode="contain")
+                self.text(s, x, y0 + sh_ + 0.03, cw, 0.3, it["caption"], size=11, italic=True, color="lt2",
+                          align="c", check=False)
         self.chrome(s, sd)
 
     def s_arcflow(self, sd):
