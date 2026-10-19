@@ -1313,6 +1313,61 @@ class Builder:
                           color="lt2", align="c")
         self.chrome(s, sd)
 
+    def s_ringsplit(self, sd):
+        """Points à pictos à gauche, anneaux « simultanés » reliés par des arcs à droite (fond sombre)."""
+        s = self.new_slide(sd)
+        self.frame(s, dark=True)
+        top = self.head(s, sd, True, size=28)
+        lw = sd.get("left_w", 5.6)
+        # colonne gauche : étiquette + points
+        y = top + 0.05
+        if sd.get("tag"):
+            self.glass(s, MX, y, 2.6, 0.5, radius=0.3)
+            self.text(s, MX, y, 2.6, 0.5, sd["tag"], size=15, bold=True, color="lt1", align="c", anchor="m",
+                      check=False)
+            y += 0.75
+        pts = sd["points"]
+        ph = (6.25 - y) / len(pts)
+        for i, p in enumerate(pts):
+            py = y + i * ph
+            if i:
+                ln = self.rect(s, MX, py, lw, 0.012, fill="accent3")
+                self.alpha_fill(ln, 0.45)
+            self.token(s, MX, py + (ph - 0.55) / 2, 0.55, p.get("icon", "•"), size=9 if len(p.get("icon", "")) > 2
+                       else 11, filled=True)
+            runs = p["text"] if isinstance(p["text"], list) else [p["text"]]
+            self.text(s, MX + 0.8, py + 0.05, lw - 0.8, ph - 0.1, runs, size=sd.get("size", 13), color="lt1",
+                      anchor="m", para_space=2)
+        # colonne droite : anneaux
+        rx0 = MX + lw + 0.5
+        rw = SW - MX - rx0
+        rings = sd["rings"]
+        n = len(rings)
+        cw = rw / n
+        r = min(0.9, cw / 2 - 0.3)
+        cy = top + 0.95 + 0.6 + r
+        if sd.get("ring_tag"):
+            self.glass(s, rx0 + rw / 2 - 1.7, top + 0.1, 3.4, 0.6, radius=0.3)
+            self.text(s, rx0 + rw / 2 - 1.7, top + 0.1, 3.4, 0.6, sd["ring_tag"], size=18, bold=True,
+                      color="lt1", align="c", anchor="m", check=False)
+        self.halo(s, rx0 + rw / 2, cy, 2.8, alpha=0.5)
+        for i, rg in enumerate(rings):
+            cx = rx0 + cw * i + cw / 2
+            # arc circulaire autour de l'anneau (flèche de cycle), alterné haut / bas comme dans la source
+            start, sweep = (200, 230) if i % 2 == 0 else (20, 230)
+            self.band_arc(s, cx, cy, r + 0.16, start, sweep, thick=0.16, color="accent3", alpha=0.85, glow=False)
+            disc = self.rect(s, cx - r, cy - r, 2 * r, 2 * r, fill="accent1", shape=MSO_SHAPE.OVAL, name="Anneau")
+            self.glow(disc, rad=18, alpha=0.5)
+            val, unit = str(rg["value"]), rg.get("unit", "")
+            self.text(s, cx - r, cy - 0.45, 2 * r, 0.9, [[(val, {"size": 36, "bold": True}),
+                                                          (unit, {"size": 18, "bold": True})]],
+                      align="c", anchor="m", check=False)
+            self.text(s, cx - cw / 2 + 0.08, cy + r + 0.3, cw - 0.16, 1.0, rg["label"], size=12.5, bold=True,
+                      align="c", color="lt1")
+        if sd.get("caption"):
+            self.text(s, rx0, cy + r + 1.35, rw, 0.6, sd["caption"], size=11, color="lt2", align="c")
+        self.chrome(s, sd)
+
     def s_arcflow(self, sd):
         """Étapes ou frise disposées le long d'un grand arc de cercle."""
         s = self.new_slide(sd)
